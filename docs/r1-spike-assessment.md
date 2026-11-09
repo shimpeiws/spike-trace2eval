@@ -1,120 +1,120 @@
-# R1 spike の総合評価
+# Overall assessment of the R1 spike
 
-評価日: 2026-11-10
+Assessment date: 2026-11-10
 
-評価対象は [PR #5](https://github.com/shimpeiws/spike-trace2eval/pull/5) のコミット `69f6f24e20c04d3a7681c8778a62061c50e5a799`。本書は、この時点の実装と報告を対象にした評価であり、後続の修正を反映しない。PR #5 は評価時点で未マージのため、実装資料へのリンクは対象コミットに固定する。
+This assessment covers [PR #5](https://github.com/shimpeiws/spike-trace2eval/pull/5) at commit `69f6f24e20c04d3a7681c8778a62061c50e5a799`. It evaluates the implementation and report at that revision and does not incorporate subsequent fixes. PR #5 was unmerged at the time of assessment, so links to its implementation documents use the fixed commit.
 
-## 評価の結論
+## Overall judgment
 
-今回の spike は、保存状態のよい実タスク一件について、既存の coding-worker の記録から再実行用ケースを作る道筋を具体化した。初期要求と開始 SHA を取り出し、ソースを再取得し、近似環境で実行し、成果物を評価する各工程を実装した点に価値がある。coding-worker を変更せず、既存の履歴を評価資産として利用する方針の実現可能性を支持する。
+The spike establishes a concrete path for converting one well-preserved real task from existing coding-worker records into a rerunnable evaluation case. It implements the stages needed to extract the initial requirements and starting SHA, retrieve the source, prepare an approximate environment, run an agent, and evaluate the artifact. This supports the feasibility of using existing execution history as evaluation material without changing coding-worker.
 
-一方、再実行の成功と漏洩防止の保証は分けて評価する必要がある。公開された報告は一度の走行完了と `satisfied` を示しているが、このレビューではその一次資料を再検証していない。また、報告された走行は一部の対策の導入前である。したがって、今回の成果は「一件のケース変換と再実行の実装、およびその実走行報告」と位置付ける。完全な環境再現、漏洩のない独力解決、汎用的な Trace 復元の実証までは含めない。
+Successful execution and assurance against leakage require separate judgments. The public report describes one completed run with a `satisfied` result, but this review did not independently verify its primary evidence. That run also predates some of the safeguards. The outcome is therefore an implementation of single-case conversion and re-execution, accompanied by a report of a real run. It does not establish complete environment reconstruction, independent solution without leakage, or general trace reconstruction.
 
-本書は spike の達成事項、設計上の価値、実験の妥当性、次の検証判断を扱う。コードレビューで挙げた個別の不具合と修正項目は対象外とする。以下の評価も、コード上の問題が解消済みであることを意味しない。
+This document assesses accomplishments, design choices, experimental validity, and decisions for further validation. Individual defects and code fixes from the code review are outside its scope. The assessment does not imply that those defects have been resolved.
 
-## 評価で確認したことと、報告に依存すること
+## Direct observations and reported results
 
-公開コード、テスト、文書と、[R1 の計画](poc-plan.md) を確認した。対象コミットで `./run_tests.sh` を実行し、合成データを用いた 90 件のテストが成功した。これは今回のレビューで直接確認した結果である。
+The review examined the public code, tests, documentation, and [R1 plan](poc-plan.md). Running `./run_tests.sh` at the reviewed commit passed all 90 tests using synthetic data. This is a directly observed result.
 
-非公開の原 Trace、実走行の stage records、Agent のツール Trace、生成パッチ、実走行の検証ログは今回のレビューでは確認していない。実走行の数値と結果は、対象コミットの [R1 report](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/r1-report.md) による報告として扱う。論文実装との同等性を独立に検証した評価でもない。
+The review did not inspect the private original trace, stage records from the real run, the agent's tool trace, the generated patch, or the run's verification logs. Run measurements and outcomes below are attributed to the [R1 report](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/r1-report.md) at the reviewed commit. This assessment also does not independently establish equivalence to the paper's implementation.
 
-| 項目 | 今回確認できた範囲 | 評価 |
+| Area | Evidence available in this review | Assessment |
 | --- | --- | --- |
-| 初期要求の抽出 | 保存 job のフィールドからケースを作り、記録されたプロンプトと歴史的 v2 テンプレートを比較する処理 | 要求を後から自由に要約しない、追跡可能な復元方法を実装した |
-| 開始ソースの復元 | 指定 SHA を取得し、履歴と remote を絞ったソースを作る処理と合成テスト | Trace に全ソースがなくても、Git 参照を使って開始状態を取得する方法を具体化した |
-| 環境の準備 | 観測値・選択値・不明点・差異を記録し、依存関係と既存チェックを実行する処理 | 元環境の近似を明示して準備する構成になった |
-| 評価基準と対照 | 要求に基づく振る舞い検査、未変更ツリーと元パッチを用いる対照処理 | 既存テストの成功だけでタスク達成と判断しない設計を採用した |
-| 独立した再実行 | 報告では 521.5 秒で終了し、8 ファイル・13,084 bytes のパッチを生成 | 実走行が完了したという報告がある。成果物の正しさは今回独立に確認していない |
-| 実走行の評価結果 | 報告では振る舞い検査と既存の五つのチェックが成功 | パイプラインの実行報告として有用。報告値をそのまま要求充足の独立証明にはしない |
-| 自動テスト | レビュー時に 90 件の成功を確認 | 合成データで検査できる工程を持つ。実データ全体の忠実性や採点の妥当性は別途確認が必要 |
+| Initial requirement extraction | Code that constructs the case from saved job fields and compares the recorded prompt with the historical v2 template | Implements a traceable recovery method that avoids freely rewriting the requirements after execution |
+| Starting source recovery | Code and synthetic tests for fetching a specified SHA and restricting history and remotes | Makes source recovery through Git references concrete, even when the trace does not contain every source file |
+| Environment preparation | Code that records observed and selected values, unknowns, and deviations, then installs dependencies and runs existing checks | Provides an explicit approximation of the original environment |
+| Evaluation criteria and controls | Requirement-derived behavior checks and controls using the unchanged tree and original patch | Adopts a design that distinguishes existing test success from completion of the new task |
+| Independent re-execution | The report describes completion in 521.5 seconds and a 13,084-byte patch across eight files | A completed real run is reported. This review did not independently verify the artifact's correctness |
+| Evaluation of the real run | The report states that behavior checks and all five existing checks passed | Useful as a pipeline execution report. The reported values alone are not independent proof of requirement satisfaction |
+| Automated tests | All 90 tests passed during review | Provides stages that can be checked with synthetic data. Fidelity to the real evidence and validity of scoring need separate verification |
 
-## 評価できる設計と達成事項
+## Valuable design choices and accomplishments
 
-### 初期情報と、実行後に得た情報を分けた
+### Initial information is separated from information learned during execution
 
-今回の中心的な判断は、Trace 全体を要約して新しい課題文にするのではなく、保存済み job の初期要求から入力を作ることにある。途中の失敗、調査結果、修正コード、最終回答を新しい Agent へ渡す経路を減らせる。要求と開始ソースの出典を説明しやすい。
+The central choice is to construct inputs from the saved job's initial requirements rather than summarize the entire trace into a new task. This reduces the routes through which intermediate failures, investigation results, modified code, and final answers can enter the new agent's input. It also makes the origins of the requirements and starting source easier to explain.
 
-この区別は [証拠入力の仕様](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/evidence-input.md) と [評価の仕様](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/evaluation.md) にも現れている。元パッチを評価側の正対照に置き、Agent 入力から分ける方針も、この目的に合う。設計意図と実際の遮断保証は別だが、守るべき情報の境界を明文化したことは成果である。
+The [evidence input contract](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/evidence-input.md) and [evaluation contract](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/evaluation.md) reflect this distinction. Keeping the original patch on the evaluator side as a positive control also fits this goal. Design intent and actual isolation guarantees remain separate, but documenting the information boundary is an accomplishment.
 
-### 復元内容の根拠を機械的に確認する工程を持った
+### Recovery has mechanically checkable evidence
 
-チェックサム、job と manifest の対応、イベント列、ツール呼び出しと結果、プロンプト一致を確認する構成は、担当者の説明だけに依存する復元より検証しやすい。生成フィールドに保存 job 上の出典を付けることで、要求の由来を後からたどれる。
+Checksums, job-to-manifest identity, event sequences, tool call and result pairing, and prompt equality make recovery easier to verify than an operator's narrative alone. Source references attached to extracted fields allow later inspection of where each requirement came from.
 
-ただし、相互に一致するハッシュは、手元の証拠の整合性を示す。証拠が収集時から改変されていないことや、記録されなかった入力が存在しないことまで保証しない。この範囲を守れば、provenance の仕組みは将来のケース追加にも利用できる。
+Matching hashes establish consistency among the evidence at hand. They do not establish that the evidence has remained unchanged since collection or that no unrecorded input existed. Within that scope, the provenance mechanism can support future cases.
 
-### 開始ソースと依存関係の取得を分けた
+### Starting source and dependency acquisition are treated separately
 
-開始 SHA のソースと、その後のセットアップが生成する依存関係を別に扱った。これにより、「元から存在したファイル」と「実行可能にするために後から取得したもの」を区別できる。
+The implementation distinguishes source at the starting SHA from dependencies produced by later setup. This separates files that existed initially from material acquired to make the case runnable.
 
-[環境の説明](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/environment.md) では、宣言上の Node 24 と観測された Node 26.8.2 の差も記録している。不一致を隠して環境再現と呼ばず、観測値に基づく近似として扱う姿勢は適切である。
+The [environment documentation](https://github.com/shimpeiws/spike-trace2eval/blob/69f6f24e20c04d3a7681c8778a62061c50e5a799/docs/environment.md) also records the difference between declared Node 24 and observed Node 26.8.2. Treating the result as an approximation based on observations, with the discrepancy visible, is appropriate.
 
-### 既存チェックと、今回の要求の評価を分けた
+### Existing checks and task-specific evaluation have distinct roles
 
-開始コミットでも既存の五つのチェックが成功していたことを踏まえ、文字列タスクの実行、digest の一致、出典の記録という要求に評価を置いた。この方針は、単にビルドできることと、新しい機能が成立することを分けている。
+The starting commit already passed the five existing checks. The evaluation therefore targets string task execution, digest equality, and task provenance. This separates the ability to build the project from satisfaction of the new feature requirements.
 
-未変更ツリーを負対照、元パッチを正対照にする設計も有用である。二つの状態を区別できることは、評価器の最低限の動作確認になる。ただし、それだけであらゆる不正実装を排除できるわけではなく、評価器の十分性とは区別する必要がある。
+Using the unchanged tree as a negative control and the original patch as a positive control is useful. Distinguishing those two states provides a basic check of evaluator behavior. It does not establish that the evaluator rejects every incorrect implementation, so control success and evaluator sufficiency remain separate questions.
 
-### 既存の運用系を変更せず、一件の流れを実装した
+### One complete workflow is implemented without changing the operational system
 
-復元、準備、入力検査、実行、採点、報告を独立したツールとして用意した。coding-worker の変更や新たな Trace 収集に着手する前に、既存の記録でどこまで進めるかを確認できる構成である。
+Recovery, preparation, input checking, execution, scoring, and reporting are implemented as separate tools. This makes it possible to investigate the value of existing records before changing coding-worker or collecting new traces.
 
-一件の spike に汎用フレームワークや性能ランキングを持ち込まず、実行結果が失敗でも成立する実験として計画した点も妥当である。Agent が解けたかだけでなく、評価ケースを構成できたかを判断対象にしたことに意味がある。
+The plan also keeps the experiment to one case and does not require a general framework or performance ranking. Allowing a failed agent attempt to remain a valid experimental outcome is appropriate. Whether a case can be constructed is a useful question independent of whether the agent solves it.
 
-## 実験の結論に残る制約
+## Constraints on the experimental conclusions
 
-### 初期要求が保存済みなので、復元の難しい部分はまだ試していない
+### Saved initial requirements leave harder reconstruction questions untested
 
-R1 では、初期 job に要求と開始 SHA が残っている。今回の中心は、それらを検証してケースへ変換する処理である。会話に分散した要求の統合、不完全な Trace からの欠落補完、複数セッションの統合は試していない。
+R1 retains the requirements and starting SHA in its initial job. The main operation is to validate those records and convert them into a case. The spike does not test integration of requirements scattered across a conversation, recovery from incomplete traces, or reconstruction across multiple sessions.
 
-そのため、今回の成果から「任意の実行 Trace から元タスクを復元できる」とは言えない。この制約は R1 の価値を否定しないが、次のケースでも同じ手法が通用するかを判断する際の境界になる。
+It therefore does not establish that an arbitrary execution trace can recover the original task. This limitation does not remove R1's value, but it defines the boundary for judging whether the method transfers to another case.
 
-### 環境は実行可能な近似であり、元の状態との同等性は未確認である
+### The environment is runnable, but equivalence to the original remains unverified
 
-元の OS バージョン、完全な PATH と環境変数、locale、内部の指示や自動追加コンテキストは復元できていない。全ツール操作の replay と結果比較も今回の範囲外である。
+The original OS version, complete PATH and environment variables, locale, internal instructions, and automatically injected context are unavailable. Replaying all original tool operations and comparing their results is also outside this spike's scope.
 
-セットアップとチェックの成功は、選択した環境でその処理が動くことを支持する。元の Agent が見ていた環境と同じであることや、元の失敗を同じ理由で再現できることまでは示さない。元の実行と再実行の差を、モデルの能力差だけで説明することもできない。
+Successful setup and checks support the claim that those operations work in the selected environment. They do not establish that the original agent saw the same environment or that original failures would recur for the same reasons. Differences between the original run and re-execution cannot be attributed solely to model ability.
 
-### 修正前の実走行と、修正後の対策の検証は別である
+### The historical run and later safeguards provide different evidence
 
-R1 report は、実走行時には後から除去した Git metadata と広い環境変数の引き継ぎが存在したと明記している。後続の対策とテストは今後の走行条件を改善するが、過去の走行を新しい条件で実施したことにはならない。
+The R1 report explicitly states that the real run included Git metadata and broad environment-variable inheritance that were removed later. Subsequent safeguards and tests improve conditions for future runs. They do not change the conditions under which the historical run occurred.
 
-したがって、この一度の走行から、現在の全対策を適用した独立評価の成立を主張できない。報告された走行結果を保存したまま、その時点の条件と現在の対策を分けて解釈する必要がある。
+That single run cannot establish an independent evaluation with all current safeguards applied. Its results can remain useful if the historical conditions and the current safeguards are interpreted separately.
 
-### 読み取り可能性と、観測された読み取りは異なる
+### Possible reads and observed reads are different claims
 
-この構成は OS 全体のファイルアクセスとネットワーク通信を隔離していない。ホスト上の証拠や元の解答が作業ディレクトリの外にあることだけでは、アクセス不能の証明にならない。事後のハッシュ比較も、読み取りの有無は示さない。
+The setup does not isolate filesystem access and network traffic at the OS level. Keeping host evidence and the original solution outside the working directory does not establish that they were inaccessible. Post-run hash comparisons cannot show whether files were read.
 
-報告にある「Agent のツール Trace に読み取りの形跡がない」は、調査した記録に基づく観察である。「読めなかった」という保証とは分ける。このレビューも、実際の漏洩があったとは判断していない。
+The report's statement that no reads appear in the agent's tool trace is an observation about the inspected record. It is not a guarantee that the agent could not read those files. This assessment does not conclude that leakage actually occurred.
 
-### 公開済み解答による汚染と、一件の選定による偏りが残る
+### Public solutions and case selection limit what the result can establish
 
-元の解答は公開されている。入力作成や実行時の情報取得を制限しても、モデルが解答を学習済みだった可能性は除けない。また、R1 は開始状態と初期要求が残り、外部依存の少ない、検証しやすいケースとして選ばれている。
+The original solution is public. Restrictions on input construction and runtime retrieval cannot exclude the possibility that the model learned the solution during training. R1 was also selected as a tractable case with retained initial requirements and source identity, limited external dependencies, and testable behavior.
 
-今回の一件・一試行から、一般的な復元成功率、Agent の成功率、モデル間の優劣を推定できない。同じモデルを別実行で使うことは、元の走行と異なる試行を作るが、解法知識から独立した評価であることは保証しない。
+One case and one attempt cannot estimate general reconstruction success, agent success rates, or relative model performance. A separate run of the same model creates a new attempt, but does not establish independence from prior knowledge of the solution.
 
-### 公開された証拠だけで追試できる範囲は限られる
+### Public evidence supports only partial reproduction
 
-原 Trace や生成パッチを公開しない判断には、私的情報と解答の保護という理由がある。一方、公開レビューで確認できるのは、実装、合成テスト、公開された実験報告までである。
+Keeping the original trace and generated patch private protects sensitive information and solution content. It also limits a public review to the implementation, synthetic tests, and published experimental report.
 
-非公開資料にアクセスできる別の担当者による確認や、内容を公開しない証拠のハッシュ一覧と監査記録があれば、実走行報告の検証可能性を補える。公開物だけでの完全な追試ができるとは扱わない。
+A separate reviewer with access to the private material could strengthen verification of the real-run report. An evidence hash inventory and audit record could also help without disclosing the contents. The public artifacts alone do not support complete reproduction.
 
-## 当初の問いへの回答
+## Answers to the original questions
 
-| 問い | 今回の評価 |
+| Question | Assessment |
 | --- | --- |
-| 元の要求と開始ソースを回復できるか | R1 の保存 job と Git を前提にした抽出・取得方法は実装された。実データでの一致は報告されているが、今回のレビューでは非公開資料を再検証していない |
-| 入力を初期情報に限定し、解法や結果の混入を検査できるか | 情報源の区分と検査工程は具体化した。実走行時の条件と記録の限界により、漏洩防止が成立したという結論は留保する |
-| coding-worker を変えずに再実行と評価まで進められるか | 一連の処理が実装され、一度の実走行と採点の完了が報告されている。パイプラインの実現可能性を支持する |
+| Can the original requirements and starting source be recovered? | Extraction and source retrieval based on R1's saved job and Git references are implemented. Agreement with the real evidence is reported, but this review did not revalidate the private material |
+| Can inputs be restricted to initial information and checked for solution or outcome leakage? | The source categories and checking stages are concrete. Historical run conditions and limits of the records prevent a conclusion that leakage prevention was established |
+| Can re-execution and evaluation proceed without changing coding-worker? | The workflow is implemented, and completion of one real run and scoring is reported. This supports pipeline feasibility |
 
-この評価は、当初の計画にある一件の PoC としての前進を認める。同時に、`satisfied` という値だけで復元品質や独立性まで判断しない。
+This assessment recognizes progress against the original single-case PoC plan. It does not infer reconstruction quality or independence from the `satisfied` value alone.
 
-## 次の実験で確かめる価値があること
+## Useful questions for the next experiment
 
-コード上の修正とは別に、次の実験判断には以下の価値がある。
+Beyond code fixes, the following experimental decisions would add evidence:
 
-- 現在の条件で追加走行する場合は、過去の一度の走行とは別の実験として扱う。新しい入力と評価基準を実行前に固定し、結果が失敗でも残す。
-- 原 Trace にアクセスできる別の担当者が、初期要求と生成ケースの対応を確認する。要求の追加・欠落・意味の変化を点検し、復元品質そのものの根拠を得る。
-- 次のケースは、R1 と異なる復元上の難しさを一つ含むものを選ぶ。候補と除外理由を記録し、成功したケースだけが残る選定を避ける。
-- 将来の Trace 保存では、後から回復できなかった情報を収集項目の候補にする。初期入力、指示の追加、環境の同定情報を優先し、機密情報は分離する。
+- Treat any additional run under current conditions as a new experiment, separate from the historical attempt. Freeze its inputs and evaluation criteria before launch, and retain the outcome even if it fails.
+- Ask a separate reviewer with access to the original trace to compare the initial requirements with the generated case. Check for added, missing, or altered requirements to obtain evidence about reconstruction fidelity itself.
+- Choose a next case with one reconstruction difficulty absent from R1. Record candidates and exclusion reasons to avoid retaining only successful cases.
+- Use information that could not be recovered here to inform future trace collection. Prioritize initial inputs, added instructions, and environment identity, with sensitive information stored separately.
 
-今回の spike が提供した最も確かな成果は、既存履歴を評価ケースへ変換するために必要な入力と工程を、実装と検証可能な文書にしたことである。次の判断は、この仕組みが動いたという報告を増やすだけでなく、生成ケースの忠実性と実験の独立性について、どの証拠を追加するかに置く。
+The spike's clearest contribution is an implementation and reviewable documentation of the inputs and stages needed to convert existing history into an evaluation case. The next experimental decision is which evidence to add about case fidelity and independence, beyond further reports that the workflow ran.
