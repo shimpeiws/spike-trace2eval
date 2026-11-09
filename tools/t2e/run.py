@@ -9,8 +9,10 @@ agent's workspace.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -27,10 +29,45 @@ SETUP_TIMEOUT_S = 900
 
 PREREQUISITE_STAGES = ["evidence", "source", "environment", "leakage"]
 
-# The original run's server credential lived only in this variable; the
-# independent harness does not need it, so it is stripped and the
-# stripping is recorded.
-STRIPPED_ENV = ["OPENCODE_SERVER_PASSWORD"]
+# --- launch environment ---------------------------------------------------
+# Default-deny: only functional (non-secret) variables reach the agent's
+# subprocess. Credential-bearing names never do, even if allowlisted.
+ENV_ALLOWLIST_EXACT = {
+    "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "SHELL", "USER",
+    "LOGNAME", "TERM", "TZ", "COLORTERM", "CI",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE", "PIP_CERT", "GIT_SSL_CAINFO",
+    "PNPM_HOME", "PNPM_SCRIPT_SRC_DIR",
+    "COREPACK_ENABLE_DOWNLOAD_PROMPT", "COREPACK_ROOT", "COREPACK_HOME",
+    "T2E_NODE_BIN",
+}
+ENV_ALLOWLIST_PREFIXES = ("LC_", "XDG_", "MISE_", "npm_config_")
+# Names that look credential-bearing are stripped unconditionally.
+ENV_SECRET_RE = re.compile(
+    r"(^OPENCODE_SERVER_|TOKEN|_KEY$|_KEYS$|SECRET|PASSWORD|PASSWD|"
+    r"CREDENTIAL|_AUTH$|_AUTH_|AUTH_|_CERT$|_PEM$|PRIVATE_KEY|BEARER)",
+    re.IGNORECASE,
+)
+
+
+def sanitized_env(extra_path_prefix: str | None = None) -> dict[str, Any]:
+    """Build the agent subprocess env (default-deny) + the audit lists."""
+    kept: dict[str, str] = {}
+    stripped: list[str] = []
+    for k, v in os.environ.items():
+        allowed = not ENV_SECRET_RE.search(k) and (
+            k in ENV_ALLOWLIST_EXACT or k.startswith(ENV_ALLOWLIST_PREFIXES)
+        )
+        if allowed:
+            kept[k] = v
+        else:
+            stripped.append(k)
+    if extra_path_prefix:
+        kept["PATH"] = f"{extra_path_prefix}:{kept.get('PATH', '')}"
+    kept["COREPACK_ENABLE_DOWNLOAD_PROMPT"] = "0"
+    return {"env": kept, "env_keys": sorted(kept), "stripped_env": sorted(stripped)}
 
 
 @dataclass
@@ -52,6 +89,18 @@ def preflight(records_dir: Path) -> Preflight:
     return pf
 
 
+def tree_sha256(root: Path) -> str:
+    """Order-stable digest of a directory's file bytes (symlinks skipped)."""
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*")):
+        if p.is_symlink() or not p.is_file():
+            continue
+        h.update(str(p.relative_to(root)).encode())
+        h.update(b"\0")
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
 def prepare_workspace(case_agent_dir: Path, dest: Path, log_dir: Path, path_prefix: str | None = None) -> dict[str, Any]:
     """Copy the agent package into a disposable workspace and run setup.
 
@@ -62,9 +111,7 @@ def prepare_workspace(case_agent_dir: Path, dest: Path, log_dir: Path, path_pref
         shutil.rmtree(dest)
     shutil.copytree(case_agent_dir, dest, symlinks=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
-    if path_prefix:
-        env["PATH"] = f"{path_prefix}:{env.get('PATH', '')}"
+    env = sanitized_env(extra_path_prefix=path_prefix)["env"]
     proc = subprocess.run(
         ["sh", "-c", "cd source && corepack pnpm install --frozen-lockfile --ignore-scripts"],
         cwd=dest, capture_output=True, text=True, timeout=SETUP_TIMEOUT_S, env=env,
@@ -151,9 +198,7 @@ def launch_agent(
     """Launch the single experiment run. Exactly one attempt."""
     source_dir = workspace / "source"
     argv = harness_command(harness, source_dir, task_text)
-    env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV}
-    if path_prefix:
-        env["PATH"] = f"{path_prefix}:{env.get('PATH', '')}"
+    env = sanitized_env(extra_path_prefix=path_prefix)["env"]
     log_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
     try:
@@ -185,25 +230,29 @@ def launch_agent(
 WORKSPACE_OPERATIONAL_FILES = {"opencode.json"}
 
 
-def collect_patch(source_dir: Path, artifacts_dir: Path) -> dict[str, Any]:
-    """Capture the agent's produced diff + changed-file list (evaluator side)."""
+def collect_patch(source_dir: Path, artifacts_dir: Path, pinned_sha: str) -> dict[str, Any]:
+    """Capture the agent's produced diff + changed-file list (evaluator side).
+
+    Diffed against the pinned base (not HEAD) so agent-made commits do not
+    silently vanish from the record.
+    """
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     _git(source_dir, "add", "-A")
     diff = subprocess.run(
-        ["git", "-C", str(source_dir), "diff", "--cached", "--binary", "HEAD",
+        ["git", "-C", str(source_dir), "diff", "--cached", "--binary", pinned_sha,
          "--", ".", ":(exclude)opencode.json"],
         capture_output=True, text=True, timeout=120,
     )
     patch_path = artifacts_dir / "patch.diff"
     patch_path.write_text(diff.stdout, encoding="utf-8")
-    status = _git(source_dir, "status", "--porcelain").stdout
-    changed = sorted(
-        l[3:] for l in status.splitlines()
-        if l.strip() and l[3:] not in WORKSPACE_OPERATIONAL_FILES
-    )
+    names = _git(source_dir, "diff", "--cached", "--name-only", pinned_sha).stdout
+    changed = sorted(n for n in names.splitlines() if n and n not in WORKSPACE_OPERATIONAL_FILES)
+    agent_commits = int(_git(source_dir, "rev-list", "--count", f"{pinned_sha}..HEAD").stdout.strip())
     return {
         "patch_ref": {"file": "patch.diff", "sha256": sha256_file(patch_path), "bytes": len(diff.stdout.encode())},
         "changed_files": changed,
+        "agent_committed": agent_commits > 0,
+        "agent_commit_count": agent_commits,
     }
 
 
@@ -246,5 +295,6 @@ def build_execution_record(
             "harness: original used OpenCode 1.18.34 via a loopback server + dsh adapter; this run uses the configured independent harness directly",
             "harness system prompt and injected context are unrecoverable; operator-level agent configuration may differ",
             "network egress is restricted at the harness tool level (no web tools), not at OS level",
+            "filesystem write boundary is not enforced at OS level: the harness's external_directory deny covers its file tools, but bash is unrestricted; workspace-external integrity is verified post-hoc instead",
         ],
     }

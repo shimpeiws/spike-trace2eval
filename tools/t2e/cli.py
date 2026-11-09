@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess as sp
 import sys
 import tempfile
 import time
@@ -52,12 +53,13 @@ from .provenance import check_input_package
 from .records import RecordState, record_path, require_record, write_record
 from .report import generate_report, sanitize_scan
 from .run import (
-    STRIPPED_ENV,
     build_execution_record,
     collect_patch,
     launch_agent,
     preflight,
     prepare_workspace,
+    sanitized_env,
+    tree_sha256,
     workspace_boundary_ok,
 )
 
@@ -267,7 +269,6 @@ def cmd_controls(args: argparse.Namespace) -> int:
     # evidence is recorded separately from agent artifacts).
     pristine = prep / "pristine"
     shutil.copytree(case_dir / "agent" / "source", pristine, symlinks=True)
-    import subprocess as sp
     ctl_env = {**os.environ, "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
     if _path_prefix(args):
         ctl_env["PATH"] = f"{_path_prefix(args)}:{ctl_env.get('PATH', '')}"
@@ -288,7 +289,9 @@ def cmd_controls(args: argparse.Namespace) -> int:
     fields["negative_control"] = {
         "verdict": neg.verdict, "strategy": neg.strategy_used, "checks": neg.checks,
     }
-    ok = ok and neg.verdict != "satisfied"  # unsolved state must NOT satisfy
+    # The unsolved state must be judged unsatisfied — "inconclusive" is an
+    # evaluator problem, not a pass.
+    ok = ok and neg.verdict == "unsatisfied"
 
     patched = prep / "patched"
     err = apply_patch_to_copy(pristine, patch, patched)
@@ -310,6 +313,25 @@ def cmd_controls(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _write_refusal(records_dir: Path, harness: str, task_sha256: str, pinned_sha: str,
+                   termination: str, timeout_s: int, extra: dict | None = None) -> None:
+    """Record a refused launch WITHOUT consuming the experiment run.
+
+    Refusals go to execution_refused.json — only a record that a real
+    launch attempt happened (execution.json) counts as consumption.
+    """
+    rec = build_execution_record(
+        harness=harness, model="not-launched",
+        task_sha256=task_sha256, pinned_sha=pinned_sha,
+        setup={}, boundary_problems=[], launch={"termination_reason": termination},
+        patch=None, timeout_s=timeout_s, stripped_env=[], env_keys=[],
+    )
+    rec["launch_attempted"] = False
+    if extra:
+        rec.update(extra)
+    write_json_atomic(records_dir / "execution_refused.json", rec)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     case_dir = Path(args.case).resolve()
     records_dir = Path(args.records).resolve()
@@ -320,68 +342,73 @@ def cmd_run(args: argparse.Namespace) -> int:
     if exec_path.exists() and not args.force:
         return _fail("execution record exists — the single experiment run is already consumed; pass --force to relaunch deliberately")
 
+    task_sha = sha256_file(case_dir / "agent" / "task.md")
+    pinned_sha = case["identity_core"]["base_revision"]
+
     pf = preflight(records_dir)
     if not pf.ok:
-        rec = build_execution_record(
-            harness=args.harness, model="not-launched",
-            task_sha256=sha256_file(case_dir / "agent" / "task.md"),
-            pinned_sha=case["identity_core"]["base_revision"],
-            setup={}, boundary_problems=[], launch={"termination_reason": "preflight_refused"},
-            patch=None, timeout_s=args.timeout, stripped_env=[], env_keys=[],
-        )
-        rec["preflight"] = {"missing": pf.missing, "invalid": pf.invalid}
-        write_json_atomic(exec_path, rec)
-        return _fail(f"preflight refused: missing={pf.missing} invalid={pf.invalid}")
+        _write_refusal(records_dir, args.harness, task_sha, pinned_sha,
+                       "preflight_refused", args.timeout,
+                       {"preflight": {"missing": pf.missing, "invalid": pf.invalid}})
+        return _fail(f"preflight refused: missing={pf.missing} invalid={pf.invalid} (run not consumed)")
 
     workspace = out_dir / "workspace"
     logs = out_dir / "logs"
     setup = prepare_workspace(case_dir / "agent", workspace, logs, path_prefix=_path_prefix(args))
     if setup["exit_code"] != 0:
-        rec = build_execution_record(
-            harness=args.harness, model="not-launched",
-            task_sha256=sha256_file(case_dir / "agent" / "task.md"),
-            pinned_sha=case["identity_core"]["base_revision"],
-            setup=setup, boundary_problems=[],
-            launch={"termination_reason": "setup_failure"}, patch=None,
-            timeout_s=args.timeout, stripped_env=[], env_keys=[],
-        )
-        write_json_atomic(exec_path, rec)
+        _write_refusal(records_dir, args.harness, task_sha, pinned_sha,
+                       "setup_failure", args.timeout, {"setup": setup})
         return _fail("dependency setup failed — operational failure, not an agent verdict")
 
-    problems = workspace_boundary_ok(workspace, case["identity_core"]["base_revision"])
+    problems = workspace_boundary_ok(workspace, pinned_sha)
     if problems:
-        rec = build_execution_record(
-            harness=args.harness, model="not-launched",
-            task_sha256=sha256_file(case_dir / "agent" / "task.md"),
-            pinned_sha=case["identity_core"]["base_revision"],
-            setup=setup, boundary_problems=problems,
-            launch={"termination_reason": "boundary_refused"}, patch=None,
-            timeout_s=args.timeout, stripped_env=[], env_keys=[],
-        )
-        write_json_atomic(exec_path, rec)
+        _write_refusal(records_dir, args.harness, task_sha, pinned_sha,
+                       "boundary_refused", args.timeout,
+                       {"setup": setup, "boundary_problems": problems})
         return _fail(f"boundary check failed: {problems}")
 
+    # Consume the run: a "running" marker is written before launch so a
+    # crash mid-run cannot make the single attempt look unconsumed.
+    write_json_atomic(exec_path, {"schema_version": 1, "stage": "execution",
+                                  "status": "failed", "launch_attempted": True,
+                                  "termination_reason": "crashed-or-incomplete"})
+
+    # Pre-launch integrity snapshot of everything the agent could read but
+    # must never write (the case package itself).
+    watch_before = {"case": tree_sha256(case_dir)}
     task_text = (case_dir / "agent" / "task.md").read_text(encoding="utf-8")
     if args.harness == "opencode":
         from .run import OPENCODE_CONFIG
         write_json_atomic(workspace / "source" / "opencode.json", OPENCODE_CONFIG)
     model = args.model or ("opencode-go/deepseek-v4.1-flash" if args.harness == "opencode" else "harness-default")
     launch = launch_agent(args.harness, workspace, task_text, args.timeout, logs, path_prefix=_path_prefix(args))
+
+    watch_after = {"case": tree_sha256(case_dir)}
+    post_integrity = {
+        "watched": sorted(watch_before),
+        "unchanged": watch_before == watch_after,
+    }
+
     patch_info = None
     if launch.get("termination_reason") == "completed":
-        patch_info = collect_patch(workspace / "source", out_dir / "artifacts")
+        patch_info = collect_patch(workspace / "source", out_dir / "artifacts", pinned_sha)
 
-    env_keys = [k for k in os.environ if k not in STRIPPED_ENV]
+    env_audit = sanitized_env()
     rec = build_execution_record(
         harness=args.harness, model=model,
-        task_sha256=sha256_file(case_dir / "agent" / "task.md"),
-        pinned_sha=case["identity_core"]["base_revision"],
+        task_sha256=task_sha, pinned_sha=pinned_sha,
         setup=setup, boundary_problems=problems, launch=launch,
         patch=patch_info, timeout_s=args.timeout,
-        stripped_env=STRIPPED_ENV, env_keys=env_keys,
+        stripped_env=env_audit["stripped_env"], env_keys=env_audit["env_keys"],
     )
+    rec["launch_attempted"] = True
+    rec["post_run_integrity"] = post_integrity
+    if not post_integrity["unchanged"]:
+        rec["status"] = "failed"
+        rec["integrity_violation"] = "watched inputs changed during the run"
     write_json_atomic(exec_path, rec)
     print(json.dumps({"status": rec["status"], "termination": launch.get("termination_reason"),
+                      "post_run_integrity": post_integrity,
                       "workspace": str(workspace)}, indent=2))
     return 0 if rec["status"] == "passed" else 1
 
@@ -402,7 +429,6 @@ def cmd_score(args: argparse.Namespace) -> int:
     fields: dict = {"behavior": {"verdict": behavior.verdict, "strategy": behavior.strategy_used, "checks": behavior.checks}}
 
     if args.run_declared_checks:
-        import subprocess as sp
         log_dir = Path(args.log_dir).resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
         check_outcomes = []
@@ -432,9 +458,13 @@ def cmd_score(args: argparse.Namespace) -> int:
         classification = "operational_failure"
     fields["verdict"] = verdict
     fields["classification"] = classification
-    write_record(records_dir, "evaluation", "passed", **fields)
-    print(json.dumps({"status": "passed", "verdict": verdict, "classification": classification}, indent=2))
-    return 0
+    # An agent verdict (satisfied/unsatisfied) is a passing evaluation;
+    # anything else is an operational failure, not a verdict.
+    record_ok = verdict in ("satisfied", "unsatisfied")
+    write_record(records_dir, "evaluation", "passed" if record_ok else "failed", **fields)
+    print(json.dumps({"status": "passed" if record_ok else "failed", "verdict": verdict,
+                      "classification": classification}, indent=2))
+    return 0 if record_ok else 1
 
 
 def cmd_report(args: argparse.Namespace) -> int:

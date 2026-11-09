@@ -32,6 +32,8 @@ credentials; all evidence references are record files plus hashes.
   - harness: original used OpenCode 1.18.34 via a loopback server + dsh adapter; this run uses the configured independent harness directly
   - harness system prompt and injected context are unrecoverable; operator-level agent configuration may differ
   - network egress is restricted at the harness tool level (no web tools), not at OS level
+  - run executed before the .git-hygiene fix (FIND-001): .git/FETCH_HEAD and a reflog naming the operator's local clone path and git identity were present in the agent workspace; agent tool trace shows no read of them and no access to the host clone
+  - run executed with a blocklist-only env filter (FIND-002): nearly all operator env names were passed through (recorded in env_keys); agent tool trace shows no env reads beyond its workspace
 
 ## Limitations
 
