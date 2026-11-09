@@ -1,54 +1,54 @@
-# R1のTrace2Eval最小実験計画
+# Single-case Trace2Eval PoC plan for R1
 
-作成日：2026-11-09。状態：計画。実装、環境構築、独立Agentでの再実行は未着手。
+Created: 2026-11-09. Status: planned. Implementation, environment setup, and an independent agent run have not started.
 
-## 1. 目的と判断基準
+## 1. Objective and decision criteria
 
-coding-workerの保存済み実行履歴を使い、独立したCoding Agentに渡せる評価ケースを1件生成する。対象はR1のみとする。
+Generate one evaluation case for an independent coding agent from retained coding-worker execution evidence. Use R1 only.
 
-実験では次を確認する。
+The experiment answers whether:
 
-1. 元のタスクとGit管理下の開始状態を復元できる。
-2. 評価Agentに渡す入力の出所を検査し、実行途中で得た解法や結果の混入を防げる。
-3. coding-worker本体を変更せず、ケース生成から独立Agentの成果物評価まで進められる。
+1. The original task and Git-tracked starting state can be recovered.
+2. Input provenance checks can prevent solutions and outcomes discovered during execution from entering the evaluated agent's input.
+3. Case generation, independent execution, and artifact evaluation can work without changing coding-worker.
 
-当時のマシン全体の完全複製や、公開済み解法による学習データ汚染の否定は判断基準に含めない。復元したソースと近似実行環境の成立を検証する。
+The experiment does not require a complete replica of the original machine or proof that the public solution is absent from model training data. It verifies the recovered source and a runnable approximation of the execution environment.
 
-## 2. 論文との関係
+## 2. Relationship to the paper
 
-[Trace2Eval論文の本文と付録A.2](https://arxiv.org/html/2611.06506v1)では、会話から目的と明示要件を抽出する。読取結果や編集前内容から初期ファイルを復元し、不足部分は推定または公開資料で補う。セッション中の生成物は初期状態から除外する。依存関係も時系列で初期状態と後付けに分ける。
+The [Trace2Eval paper and Appendix A.2](https://arxiv.org/html/2611.06506v1) extract objectives and explicit requirements from interactions. File reads and pre-edit contents recover initial files; inference or public resources fill gaps. Session-generated artifacts are excluded, and dependencies are separated into initial conditions and later installations using temporal evidence.
 
-復元環境では元のツール列を再生し、記録結果との一致度と人手確認で復元を検証する。これは元環境全体の同一性の証明ではない。成果物評価には人手で調整したrubricを使う。
+Recovery is checked by replaying original tool calls, comparing results, and conducting human verification. This does not prove complete environment identity. Artifact evaluation uses human-calibrated rubrics.
 
-本PoCでは以下を独自に簡略化する。論文の完全再現とは呼ばない。
+This PoC makes the following independent simplifications. It is not a full reproduction of the paper.
 
-| 論文の構成 | R1での扱い |
+| Paper component | Treatment in R1 |
 | --- | --- |
-| 会話からの要求復元 | 保存済みJobのIssue snapshotを直接採用する |
-| 不足ファイルの推定・生成 | 固定SHAのGitファイルを使い、推定生成しない |
-| 全ツール列のreplayと環境修復 | 初期状態の検査、セットアップ、必要な検証に限定する |
-| 複数Agentによる復元 | 決定的な抽出処理と人手レビューで代替する |
-| 多数ケースの選定とrubric校正 | 1件の要求充足と再実行可能性だけを確認する |
+| Recover requirements from conversation | Use the issue snapshot in the saved job directly |
+| Infer or generate missing files | Use the pinned Git tree; do not synthesize missing source |
+| Replay all tool calls and repair the environment | Check the starting state, setup, and required verification only |
+| Use multiple recovery agents | Use deterministic extraction and human review |
+| Select many cases and calibrate rubrics | Check one case for requirement satisfaction and reproducibility |
 
-初期状態とセッション中の生成情報を分離する考え方を採用する。入力の出所制限と機械検査は本PoC独自の設計とする。論文の公開実装は調査時に取得できず、実装コードとの対応は未確認。
+The separation between initial state and session-generated information follows the paper. Input provenance restrictions and mechanical checks are PoC-specific design choices. The paper's implementation could not be retrieved during investigation, so implementation-level correspondence remains unverified.
 
-## 3. 対象ケースR1
+## 3. Selected case: R1
 
-| 項目 | 調査で確認した内容 |
+| Item | Observed evidence |
 | --- | --- |
-| 対象 | [shimpeiws/yuurei #195](https://github.com/shimpeiws/yuurei/issues/195) |
-| 元の要求 | タスクファイルをプロジェクトに作らず文字列タスクを実行し、同じ内容のファイル入力とtask digestを一致させる |
-| 開始SHA | `99cd09ab71b0ba2807f1d39d0a26dfe042e89bac` |
+| Target | [shimpeiws/yuurei #195](https://github.com/shimpeiws/yuurei/issues/195) |
+| Original requirement | Execute a task held as a string without creating a task file in the project; preserve the task digest of identical file input |
+| Starting SHA | `99cd09ab71b0ba2807f1d39d0a26dfe042e89bac` |
 | Worker run ID | `20261008T033410Z-7f2a94ec` |
-| 実行日時 | 2026-10-08、約7分 |
-| Agent / Harness | OpenCode、旧adapter名 `dsh`、OpenCode版 `1.18.34` |
-| セッション | 1セッション。plannerやconvergeを含めない |
-| Trace | `events.jsonl`、6,588イベント、2,254,759 bytes |
-| ツール操作 | 固有IDで85操作。bash 50、edit 21、read 13、write 1 |
-| 検証 | Workerの5 checksがすべてexit 0 |
-| 独立資料 | 元Issue、[PR #223](https://github.com/shimpeiws/yuurei/pull/223)、対象Git履歴、実行前readiness記録 |
+| Execution date | 2026-10-08; approximately seven minutes |
+| Agent and harness | OpenCode, legacy adapter name `dsh`, OpenCode version `1.18.34` |
+| Sessions | One; excludes planner and converge runs |
+| Trace | `events.jsonl`: 6,588 events, 2,254,759 bytes |
+| Tool operations | 85 distinct operations: 50 bash, 21 edit, 13 read, and one write |
+| Checks | All five worker checks exited with code 0 |
+| Independent references | Original issue, [PR #223](https://github.com/shimpeiws/yuurei/pull/223), target Git history, and a pre-dispatch readiness record |
 
-保存証跡はprivateなcoding-workerリポジトリ内にある。アクセス権を持つ実装者が、次の相対パスを入力として指定する。
+The retained evidence is in a private coding-worker repository. An implementer with access supplies the following repository-relative directory as input:
 
 ```text
 eval/evidence/issue-34/
@@ -57,93 +57,93 @@ eval/evidence/issue-34/
   runs/v03-bounded-devflow-run-yuurei-195/20261008T033410Z-7f2a94ec/
 ```
 
-照合資料は `eval/jobs/issue-34/task.json` と `eval/jobs/issue-34/readiness.md`。証跡を記録したcommitは `28a21f6ffc7de906ceeda8100fbd6a2ae1239bac`。これらの資料自体は本リポジトリへコピーしない。
+Supporting records are `eval/jobs/issue-34/task.json` and `eval/jobs/issue-34/readiness.md`. The evidence-recording commit is `28a21f6ffc7de906ceeda8100fbd6a2ae1239bac`. Do not copy those records into this repository.
 
-### 確認済みの整合性
+### Verified consistency
 
-- JSONLのseqは1から6,588まで連続する。
-- `tool.call` は328イベントあるが、状態更新をまとめると85操作になる。85操作すべてに対応する `tool.result` がある。
-- Job、manifest、`checkout.ready` の開始SHAが一致する。
-- seq 94の `git status` はdetached HEADかつcleanを示す。
-- 保存Jobと当時のv2テンプレートから再生成したプロンプトは、seq 9の4,066 bytesと完全一致する。
-- prepared taskとJobのIssue snapshotが一致する。
-- `SHA256SUMS` に列挙された33ファイルがすべて一致する。
+- JSONL sequence numbers are consecutive from 1 through 6,588.
+- There are 328 `tool.call` events, including state updates. Grouping by distinct IDs yields 85 operations, each with a matching `tool.result`.
+- The starting SHA agrees across the job, manifest, and `checkout.ready` event.
+- The `git status` output at sequence 94 records a detached, clean checkout.
+- Regenerating the prompt from the saved job and historical v2 template exactly matches the 4,066-byte prompt at sequence 9.
+- The prepared task and job contain the same issue snapshot.
+- All 33 files listed in `SHA256SUMS` match their recorded checksums.
 
-これらは2026-11-09の読み取り調査結果である。将来の抽出処理でも再検査し、過去の報告だけを根拠に受理しない。
+These are findings from the read-only investigation on 2026-11-09. The extractor must repeat the checks rather than accept this report as proof for a later input.
 
-## 4. 保存アーキテクチャと復元可能性
+## 4. Storage architecture and reconstruction limits
 
-coding-workerはprepared taskをJobへ変換し、固定SHAをcloneしてdetached checkoutする。作業用checkoutと証跡は別ディレクトリに置かれる。Job、manifest、正規化イベント、結果、patch、検証出力が保存される。
+coding-worker maps a prepared task to a job, clones the repository, and checks out the pinned SHA in detached mode. The disposable checkout and retained evidence occupy separate directories. Evidence includes the job, manifest, normalized events, result, patch, and check output.
 
-OpenCodeのツールイベントがファイル操作やコマンドの記録になる。OS全体の監査ログではない。イベントはredactionやサイズ制限の影響を受けるため、存在と完全性を別々に検査する。
+OpenCode tool events record file operations and commands. They are not an OS-wide audit log. Redaction and size limits can remove payloads, so evidence presence and completeness require separate checks.
 
-現行coding-workerではセッションやmanaged runtimeを終了時に削除する経路がある。過去セッションをAPIやDBから必ず再取得できるとは扱わず、R1の保存ファイルを入力にする。
+Current coding-worker code has terminal paths that delete sessions and managed runtime directories. Do not assume historical sessions remain available through an API or database. Use R1's retained files.
 
-以下の `observed` はイベントと同runのJob・manifestに直接記録された情報を表す。Gitと実行前記録による補完は根拠欄で区別する。
+In this matrix, `observed` means directly recorded in events or the same run's job and manifest. Git and pre-dispatch records are identified separately when they supplement the trace.
 
-| 情報 | 分類 | 根拠と限界 |
+| Information | Classification | Evidence and limits |
 | --- | --- | --- |
-| Workerへの要求・AC・制約 | observed | `job.snapshot.json`、seq 9 |
-| Issue以前の人間の会話 | missing | 保存証跡には含まれない |
-| 初期タスクプロンプト | observed | seq 9と当時のv2テンプレートの一致 |
-| Harnessのsystem promptと自動注入コンテキスト全体 | missing | 最終的なモデル入力全体は保存されていない |
-| リポジトリ内の指示ファイル | observed、一部Git補完 | seq 89の読取結果と開始SHAのファイル |
-| 途中の追加指示 | missing | 識別された人間の追加指示はないが、role情報が粗く厳密な不在証明はできない |
-| リポジトリと開始SHA | observed | Job、manifest、seq 2 |
-| detached・clean開始 | observed | seq 94 |
-| Git管理下の初期ファイル全体 | Trace単体ではmissing | 指定SHAのGitオブジェクトから取得可能 |
-| OS系統 | inferred | パス形式からmacOSと推定。OS版は不明 |
-| Nodeとpnpm | observed | seq 2103でNode 26.8.2、pnpm 11.6.0 |
-| 依存関係とセットアップ | 一部observed、Git補完 | seq 2156のinstall結果と開始SHAのlockfile |
-| テストコマンド | observed | Jobのchecksとseq 6576以降 |
-| 環境変数、PATH全体、locale | missing | 完全な環境スナップショットなし |
-| 推論サービスへの依存 | observed | 元実行はOpenCode Goを利用。認証値は復元しない |
+| Worker task, acceptance criteria, and constraints | observed | `job.snapshot.json` and sequence 9 |
+| Human conversation preceding the issue | missing | Not included in retained evidence |
+| Initial task prompt | observed | Sequence 9 matches the historical v2 template |
+| Harness system prompt and all automatically injected context | missing | The complete final model input is not retained |
+| Repository instruction files | observed, supplemented by Git | Read output at sequence 89 and files at the starting SHA |
+| Instructions added during execution | missing | No identified additional human instruction; coarse role metadata prevents proof of absence |
+| Repository and starting SHA | observed | Job, manifest, and sequence 2 |
+| Detached, clean starting checkout | observed | Sequence 94 |
+| Complete Git-tracked starting source | missing from trace alone | Recoverable from Git objects at the specified SHA |
+| OS family | inferred | Paths suggest macOS; the OS version is unknown |
+| Node and pnpm | observed | Sequence 2103: Node 26.8.2 and pnpm 11.6.0 |
+| Dependencies and setup | partly observed, supplemented by Git | Install output at sequence 2156 and the starting lockfile |
+| Test commands | observed | Job checks and sequences 6576 onward |
+| Environment variables, complete PATH, and locale | missing | No complete environment snapshot |
+| Inference service dependency | observed | Original run used OpenCode Go; do not recover credentials |
 
-開始SHAの `mise.toml` はNode 24を指定するが、実測は26.8.2だった。元実行の近似には実測を優先し、相違を記録する。依存パッケージのinstallはセッション途中なので、初期ソースへ `node_modules` を混入させない。
+The starting `mise.toml` specifies Node 24, while the observed executable was 26.8.2. Prefer the observed version when approximating the original execution and record the discrepancy. Package installation occurred during the session; do not include `node_modules` in the starting source tree.
 
-## 5. 情報漏洩を防ぐ設計
+## 5. Leakage controls
 
-### 実際に確認した漏洩源
+### Observed sources of leakage
 
-| 出所 | 含まれる後知恵 |
+| Source | Information learned after task dispatch |
 | --- | --- |
-| seq 3544のedit結果 | 具体的な修正内容 |
-| seq 4145のテスト失敗 | 実装後に判明した失敗箇所 |
-| seq 4802の依存CLI調査 | 調査を経て得た問題理解 |
-| seq 5231のテスト成功 | 修正後の成功結果 |
-| seq 5852付近のdiff | 修正済みコード |
-| seq 6564の最終回答 | 解法と検証結果の要約 |
-| 元patch、PR、その後のGit履歴 | 元の実装と後続修正 |
+| Edit result at sequence 3544 | Concrete implementation changes |
+| Test failure at sequence 4145 | A failure discovered after implementation |
+| Dependency CLI inspection at sequence 4802 | Understanding obtained through investigation |
+| Passing tests at sequence 5231 | Successful post-fix outcome |
+| Diff near sequence 5852 | Modified source code |
+| Final response at sequence 6564 | Solution and verification summary |
+| Original patch, PR, and subsequent Git history | Original implementation and later fixes |
 
-正規化された初期プロンプトも `role: assistant` と記録されている。roleだけでは入力と解法を分けられない。標準exportもeventsとresultを残すため、そのまま評価Agentへ渡さない。
+Even the initial prompt is normalized with `role: assistant`. Role filtering alone cannot separate input from solution. The standard export retains events and results, so it is not a safe evaluated-agent input.
 
-### 評価入力の許可リスト
+### Allowed input sources
 
-評価Agentへの入力は、次の出所だけから生成する。
+Generate evaluated-agent inputs only from:
 
-- 保存JobのIssue、AC、タスク制約、checks、予算。
-- 固定開始SHAのソース。
-- 解法を含まない、明示的に選んだ環境バージョンとセットアップ手順。
+- The saved job's issue, acceptance criteria, task constraints, checks, and budgets.
+- Source files at the pinned starting SHA.
+- Explicitly selected environment versions and setup instructions that contain no solution information.
 
-全Traceは評価側で検査してよいが、その自由要約を評価入力へ追加しない。説明文を追加するときは初期情報の出所を紐付ける。根拠がなければ生成を拒否する。
+The evaluator may inspect the full trace, but must not add a free-form summary of it to agent input. Additional prose must cite its initial-information source. Reject unsupported additions.
 
-元Trace、patch、result、review、planは評価Agentから見えない場所に保持する。ソースは指定commitの内容だけから構成し、将来のcommit、remote、元作業ディレクトリを渡さない。依存取得後の実行では外部検索と解法取得の経路を制限する。
+Keep the original trace, patch, result, review, and plan inaccessible to the evaluated agent. Materialize only the specified commit's files; do not provide later commits, remotes, or the original working directory. After dependency acquisition, restrict external search and solution-retrieval paths during execution.
 
-入力ファイルの許可リスト、出所、hashを検査する。patchとの文字列一致検査は補助にとどめる。一般的なコードの一致は漏洩の証明にならない。
+Check the input file allowlist, provenance, and hashes. Treat string overlap with the original patch as a supplementary check, since common code is not proof of leakage.
 
-この設計が検査するのは生成入力への混入である。公開済み解法をモデルが学習済みでないことは証明しない。
+These controls check contamination introduced during case construction. They cannot prove that a model has not learned the publicly available solution.
 
-## 6. 実装方式と入出力
+## 6. Implementation approach and input/output
 
-| 方式 | 評価 |
+| Approach | Decision |
 | --- | --- |
-| A：既存Trace直接解析 | 採用。JobとGitを主入力にすれば、本体を変更せず対象1件を処理できる |
-| B：既存exportまたはAPIから取得 | Job形式とhash情報は再利用する。標準exportは解法が残り、過去セッションAPIは残存保証がないため主経路にしない |
-| C：今後の計測追加 | R1では不要。将来ケースで重要情報が欠けた場合に検討する |
+| A: Parse existing evidence directly | Adopt. The job and Git provide the main inputs without changing coding-worker |
+| B: Use existing export or session APIs | Reuse job structures and integrity metadata. Do not rely on standard exports, which retain solutions, or on historical sessions remaining available |
+| C: Instrument future executions | Unnecessary for R1. Reconsider only when future cases lack essential information |
 
-入力は証跡ディレクトリ、対象Gitオブジェクト、環境方針とする。ローカルの絶対パスは引数で指定し、公開設定へ固定しない。
+Inputs are the retained evidence directory, target Git objects, and an environment policy. Supply local absolute paths as arguments rather than publishing machine-specific configuration.
 
-出力構成は暫定とし、実装時に対象1件に必要な範囲へ絞る。
+The output structure is provisional. Keep the implementation limited to what this single case needs.
 
 ```text
 case/
@@ -154,71 +154,71 @@ case/
   source/
 ```
 
-`case.json` はケースID、repository、開始SHA、要求、AC、制約、checks、予算、入力hashを保持する。`environment.json` は環境の観測値、採用値、不明点、元環境との差を保持する。`setup.sh` は依存セットアップだけを行う。
+`case.json` records the case ID, repository, starting SHA, requirements, acceptance criteria, constraints, checks, budgets, and input hashes. `environment.json` records observed versions, selected versions, unknowns, and deviations. `setup.sh` performs dependency setup only.
 
-元証跡、詳細provenance、漏洩検査結果、評価用テスト、再実行結果は評価Agentへ渡すディレクトリの外に置く。公開計画と非公開の実験データを混同しない。
+Keep raw evidence, detailed provenance, leakage reports, evaluator tests, and run results outside the directory provided to the evaluated agent. Separate public planning documents from private experiment data.
 
-## 7. 実装する単位と完了条件
+## 7. Implementation steps and acceptance criteria
 
-### 単位1：保存証跡の検査と初期条件の抽出
+### Step 1: Validate evidence and extract initial conditions
 
-Job、run ID、開始SHA、checksum、イベント連番、call/result対応、truncationを検査する。Jobの初期情報だけからタスクを生成し、当時のv2プロンプトとの照合を行う。
+Check the job, run ID, starting SHA, checksums, event sequence, call/result correspondence, and truncation. Generate the task exclusively from the job's initial information, and compare the historical v2 prompt.
 
-完了条件は、同じ入力から同じケース内容とhashが得られ、根拠不足や不一致を明示して停止できること。
+Accept this step when identical inputs produce identical case content and hashes, and insufficient evidence or inconsistencies cause an explicit refusal.
 
-### 単位2：開始ソースと近似環境の準備
+### Step 2: Prepare starting source and an approximate environment
 
-開始commitのファイルだけを取得する。Node 26.8.2、pnpm 11.6.0、開始commitのlockfileを使う。初期ソースと依存セットアップによる生成物を分ける。
+Materialize files from the starting commit only. Use Node 26.8.2, pnpm 11.6.0, and that commit's lockfile. Separate initial source from files generated by dependency setup.
 
-完了条件は、ソースが指定commitに一致し、セットアップと既存checksが隔離環境で実行できること。OSやキャッシュ等の差分を記録する。元ツール列の完全replayは要求しない。
+Accept this step when the source matches the specified commit and setup plus existing checks execute in isolation. Record differences such as OS and cache state. Full trajectory replay is not required.
 
-### 単位3：入力の漏洩検査と要求に基づく評価
+### Step 3: Check leakage and evaluate requirements
 
-評価Agentのマウント、入力ファイル、Git履歴、ネットワーク経路を検査する。初期要求に対応する振る舞いを、元patchから独立して確認する。
+Inspect the evaluated agent's mounts, input files, Git history, and network access. Verify behavior derived from the initial requirements independently of the original patch.
 
-実行前記録では開始SHAも既存の5 checksを通過している。既存checksの成功だけを課題解決の証拠にしない。以下を確認する評価を追加する。
+The pre-dispatch record reports that the starting SHA already passed all five existing checks. Passing those checks alone cannot establish task completion. Add behavior checks for:
 
-- プロジェクトにタスクファイルを作らず文字列タスクを実行できる。
-- 同じ内容のファイル入力とtask digestが一致する。
-- タスクの出所記録が実態と矛盾しない。
+- Executing a string task without creating a task file in the project.
+- Matching the task digest of identical file-based input.
+- Recording task provenance honestly.
 
-Issueはstdinまたは同等inline形式を許容する。採点で元実装固有の構造や文字列表現を要求しない。対象の既存テストはfixture runtimeを使うため、検証自体に実モデルの推論は不要。
+The issue permits stdin or an equivalent inline form. Do not require the original implementation's internal structure or arbitrary string representation. Existing target tests use fixture runtimes, so verification itself does not require real model inference.
 
-完了条件は、課題未解決の開始状態と要求を満たす成果物を区別でき、評価入力に後知恵を含めないこと。元patchを使う正例確認を行う場合も、評価側だけで扱う。
+Accept this step when the evaluator distinguishes the unsolved starting state from an artifact satisfying the requirements, without including later discoveries in agent input. If the original patch is used to validate a positive control, keep it on the evaluator side only.
 
-### 単位4：独立Agentで1回実行
+### Step 4: Run an independent agent once
 
-初期要求と開始ソースだけを渡して1回実行し、成果物、検証結果、使用環境、予算、失敗理由を保存する。元のモデル固定指示などHarness固有条件を変更した箇所を記録する。
+Provide only the initial task and starting source. Record the artifact, checks, environment, budgets, and failure reasons. Record changes to harness-specific conditions such as the original fixed-model instruction.
 
-成功は独立Agentが必ず解くことではない。ケース生成、実行、採点が成立し、Agentの失敗と環境不備を区別できることを完了条件にする。
+Success does not require the independent agent to solve the task. It requires case generation, execution, and scoring to work, with agent failures distinguished from environment failures.
 
-実装規模は対象1件で数百行、1〜3日を目安とする未検証の見積もり。依存取得とOS差で変わる。汎用フレームワークは作らない。
+The unvalidated estimate is a few hundred lines and one to three days for this case. Dependency acquisition and OS differences can change that estimate. Do not build a general-purpose framework.
 
-## 8. 実装時に確定する点
+## 8. Decisions to finalize during implementation
 
-| 項目 | 推奨する初期方針 |
+| Decision | Recommended starting policy |
 | --- | --- |
-| OS | 元と同じmacOS系統を優先。Linux対応は別検証 |
-| Node | 宣言値24より実測26.8.2を優先 |
-| 依存関係 | lockfile固定。事前キャッシュは許容し、条件を記録 |
-| Harness条件 | タスク要件と分離し、独立Agent向け変更を明示 |
-| 評価基準 | 初期Issueの許容範囲から定義し、元実装に固定しない |
-| データ公開 | 今回は文書のみ。Traceや生成ケースの公開は内容と権利を確認した別の判断 |
+| OS | Prefer the original macOS family; validate Linux separately |
+| Node | Prefer observed 26.8.2 over declared 24 |
+| Dependencies | Pin the lockfile; allow a prewarmed cache and record it |
+| Harness conditions | Separate them from task requirements and document changes for the independent agent |
+| Evaluation criteria | Derive them from the initial issue's allowed behavior, not the original implementation |
+| Data publication | Documents only for now. Review contents and rights separately before publishing traces or generated cases |
 
-## 9. 今回の範囲外
+## 9. Out of scope
 
-- coding-worker本体、運用設定、進行中Workerの変更。
-- 新しい収集用Agent実行や追加計測。
-- R1以外のケース、planner・convergeを跨ぐ復元。
-- 全ツール列のreplay、論文のrubric全体の実装。
-- 多数モデル比較、性能ランキング、学習データ汚染がないという主張。
-- Trace、初期プロンプト全文、元patch、認証情報の公開。
+- Changes to coding-worker, operational configuration, or active workers.
+- New collection runs or instrumentation.
+- Cases other than R1, or reconstruction spanning planner and converge runs.
+- Full tool replay or the paper's complete rubric implementation.
+- Broad model comparisons, rankings, or claims of training-data contamination resistance.
+- Publishing raw traces, full initial prompts, original patches, or credentials.
 
-## 10. 公開資料
+## 10. Public references
 
-- [Trace2Eval論文](https://arxiv.org/abs/2611.06506)
-- [yuurei Issue #195](https://github.com/shimpeiws/yuurei/issues/195)
-- [yuureiの開始commit](https://github.com/shimpeiws/yuurei/tree/99cd09ab71b0ba2807f1d39d0a26dfe042e89bac)
+- [Trace2Eval paper](https://arxiv.org/abs/2611.06506)
+- [yuurei issue #195](https://github.com/shimpeiws/yuurei/issues/195)
+- [yuurei starting commit](https://github.com/shimpeiws/yuurei/tree/99cd09ab71b0ba2807f1d39d0a26dfe042e89bac)
 - [yuurei PR #223](https://github.com/shimpeiws/yuurei/pull/223)
 
-PRは独立した照合資料だが解法を含むため、評価Agentへの入力にはしない。元Traceとreadiness記録の検査には、privateな保存元へのアクセスが別途必要。
+The PR is an independent reference but contains the solution; do not expose it to the evaluated agent. Inspecting the original trace and readiness record requires separate access to the private evidence source.
