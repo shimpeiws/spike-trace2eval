@@ -1,0 +1,7 @@
+# Generated pipeline output (cases, records, run workspaces, logs).
+out/
+# Python caches.
+__pycache__/
+*.pyc
+# Verification scratch.
+.verification/
