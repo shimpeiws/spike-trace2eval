@@ -63,6 +63,17 @@ class TestHarness(unittest.TestCase):
         with self.assertRaises(ValueError):
             harness_command("mystery", Path("/tmp/ws"), "task")
 
+    def test_model_reaches_launch_argv_opencode(self):
+        """--model overrides the pinned default in the actual argv."""
+        argv = harness_command("opencode", Path("/tmp/ws"), "task", model="provider/x")
+        self.assertEqual(argv[argv.index("--model") + 1], "provider/x")
+
+    def test_model_reaches_launch_argv_claude(self):
+        argv = harness_command("claude", Path("/tmp/ws"), "task", model="sonnet")
+        self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+        # Without --model, no flag is emitted (harness default).
+        self.assertNotIn("--model", harness_command("claude", Path("/tmp/ws"), "task"))
+
 
 class TestExecutionClassification(unittest.TestCase):
     def _rec(self, termination: str) -> dict:

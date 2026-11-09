@@ -165,16 +165,24 @@ OPENCODE_CONFIG = {
 }
 
 
-def harness_command(harness: str, source_dir: Path, task_text: str) -> list[str]:
-    """Return argv for the supported independent harnesses (prompt placement varies)."""
+def harness_command(harness: str, source_dir: Path, task_text: str,
+                    model: str | None = None) -> list[str]:
+    """Return argv for the supported independent harnesses (prompt placement varies).
+
+    `model` is passed to the harness's model flag — it reaches the launch,
+    not just the record. Harnesses without a usable model flag raise.
+    """
     if harness == "claude":
         # Headless; external search/retrieval tools are denied while the
         # inference service itself remains usable. Prompt via stdin.
-        return [
+        argv = [
             "claude", "-p", "--dangerously-skip-permissions",
             "--disallowedTools", "WebSearch WebFetch",
             "--output-format", "text",
         ]
+        if model:
+            argv += ["--model", model]
+        return argv
     if harness == "opencode":
         # Same harness family + provider + model as the original run.
         # --auto: unattended approval; --pure: no external plugins;
@@ -182,7 +190,7 @@ def harness_command(harness: str, source_dir: Path, task_text: str) -> list[str]
         # webfetch/external_directory denied via workspace opencode.json.
         return [
             "opencode", "run", "--auto", "--pure", "--format", "json",
-            "--model", OPENCODE_MODEL, "--dir", str(source_dir), task_text,
+            "--model", model or OPENCODE_MODEL, "--dir", str(source_dir), task_text,
         ]
     raise ValueError(f"unsupported harness: {harness}")
 
@@ -194,10 +202,11 @@ def launch_agent(
     timeout_s: int,
     log_dir: Path,
     path_prefix: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Launch the single experiment run. Exactly one attempt."""
     source_dir = workspace / "source"
-    argv = harness_command(harness, source_dir, task_text)
+    argv = harness_command(harness, source_dir, task_text, model=model)
     env = sanitized_env(extra_path_prefix=path_prefix)["env"]
     log_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()

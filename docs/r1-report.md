@@ -26,7 +26,7 @@ credentials; all evidence references are record files plus hashes.
 - termination: `completed` after 521.5s (timeout budget 2400s; step limits not enforceable in-process)
 - os: Darwin 25.6.0 (arm64)
 - produced patch: 13084 bytes across 8 files; sha256 `d65bbb014f2b8725…`
-- behavior checks: baseline-file-run=ok, inline-task-executes=ok, no-task-file-created=ok, digest-equal=ok, provenance-honest=ok
+- behavior checks: baseline-file-run=ok, file-source-matches=ok, file-digest-is-content-hash=ok, file-body-received=ok, inline-task-executes=ok, inline-body-received=ok, no-task-file-created=ok, digest-equal=ok, inline-digest-is-content-hash=ok, digest-varies-with-input=ok, provenance-honest=ok
 - declared repo checks: install-and-focused-tests=0, build=0, lint=0, format=0, knip=0
 - recorded deviations:
   - harness: original used OpenCode 1.18.34 via a loopback server + dsh adapter; this run uses the configured independent harness directly

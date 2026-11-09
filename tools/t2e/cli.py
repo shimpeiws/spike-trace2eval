@@ -49,10 +49,11 @@ from .evidence import (
     validate_evidence,
 )
 from .materialize import materialize
-from .provenance import check_input_package
+from .provenance import check_input_package, package_fingerprint
 from .records import RecordState, record_path, require_record, write_record
 from .report import generate_report, sanitize_scan
 from .run import (
+    OPENCODE_MODEL,
     build_execution_record,
     collect_patch,
     launch_agent,
@@ -180,6 +181,15 @@ def cmd_environment(args: argparse.Namespace) -> int:
     write_json_atomic(agent_dir / "environment.json", env_json)
     write_setup_sh(agent_dir)
 
+    # environment.json/setup.sh are agent inputs too: pin their content so
+    # check-inputs detects post-generation tampering with either file.
+    case["input_hashes"] = {
+        **case.get("input_hashes", {}),
+        "environment.json": sha256_file(agent_dir / "environment.json"),
+        "setup.sh": sha256_file(agent_dir / "setup.sh"),
+    }
+    write_json_atomic(case_dir / "case.json", case)
+
     fields: dict = {"selected": selected, "deviations": env_json["deviations"]}
     ok = selected.get("node") is not None and selected.get("pnpm") is not None
 
@@ -228,7 +238,9 @@ def cmd_check_inputs(args: argparse.Namespace) -> int:
         pinned_sha=case["identity_core"]["base_revision"],
         patch_file=patch,
     )
-    fields = {"checks": res.checks, "diagnostics": res.diagnostics, "supplementary": res.supplementary}
+    fingerprint = package_fingerprint(case_dir / "agent")
+    fields = {"checks": res.checks, "diagnostics": res.diagnostics,
+              "supplementary": res.supplementary, "inputs_fingerprint": fingerprint}
     write_record(records_dir, "leakage", "passed" if res.ok else "failed", **fields)
     print(json.dumps({"status": "passed" if res.ok else "failed", "diagnostics": res.diagnostics}, indent=2))
     return 0 if res.ok else 1
@@ -237,7 +249,7 @@ def cmd_check_inputs(args: argparse.Namespace) -> int:
 def cmd_evaluate(args: argparse.Namespace) -> int:
     target = Path(args.target).resolve()
     records_dir = Path(args.records).resolve()
-    res = evaluate_behavior(target, timeout=args.timeout)
+    res = evaluate_behavior(target, timeout=args.timeout, path_prefix=_path_prefix(args))
     fields = {
         "target": target.name,
         "verdict": res.verdict,
@@ -285,7 +297,7 @@ def cmd_controls(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "failed", **fields}, indent=2))
         return 1
 
-    neg = evaluate_behavior(pristine, timeout=args.timeout)
+    neg = evaluate_behavior(pristine, timeout=args.timeout, path_prefix=_path_prefix(args))
     fields["negative_control"] = {
         "verdict": neg.verdict, "strategy": neg.strategy_used, "checks": neg.checks,
     }
@@ -299,7 +311,7 @@ def cmd_controls(args: argparse.Namespace) -> int:
         fields["positive_control"] = {"verdict": f"inconclusive:patch apply failed: {err}"}
         ok = False
     else:
-        pos = evaluate_behavior(patched, timeout=args.timeout)
+        pos = evaluate_behavior(patched, timeout=args.timeout, path_prefix=_path_prefix(args))
         fields["positive_control"] = {
             "verdict": pos.verdict, "strategy": pos.strategy_used, "checks": pos.checks,
             "note": "original patch used as positive control; evaluator-side only, never published",
@@ -367,6 +379,19 @@ def cmd_run(args: argparse.Namespace) -> int:
                        {"setup": setup, "boundary_problems": problems})
         return _fail(f"boundary check failed: {problems}")
 
+    # Re-inspect immediately before launch: the inputs must still be
+    # byte-identical to what check-inputs approved. A changed package —
+    # or a leakage record that predates fingerprinting — refuses without
+    # consuming the run.
+    leak_rec = require_record(records_dir, "leakage")
+    recorded_fp = (leak_rec.record or {}).get("inputs_fingerprint")
+    current_fp = package_fingerprint(case_dir / "agent")
+    if not recorded_fp or recorded_fp != current_fp:
+        _write_refusal(records_dir, args.harness, task_sha, pinned_sha,
+                       "input_drift", args.timeout,
+                       {"inputs_fingerprint": {"recorded": recorded_fp, "current": current_fp}})
+        return _fail("inputs changed since check-inputs (or no recorded fingerprint) — re-run check-inputs (run not consumed)")
+
     # Consume the run: a "running" marker is written before launch so a
     # crash mid-run cannot make the single attempt look unconsumed.
     write_json_atomic(exec_path, {"schema_version": 1, "stage": "execution",
@@ -380,8 +405,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.harness == "opencode":
         from .run import OPENCODE_CONFIG
         write_json_atomic(workspace / "source" / "opencode.json", OPENCODE_CONFIG)
-    model = args.model or ("opencode-go/deepseek-v4.1-flash" if args.harness == "opencode" else "harness-default")
-    launch = launch_agent(args.harness, workspace, task_text, args.timeout, logs, path_prefix=_path_prefix(args))
+    model = args.model or (OPENCODE_MODEL if args.harness == "opencode" else "harness-default")
+    launch = launch_agent(args.harness, workspace, task_text, args.timeout, logs,
+                          path_prefix=_path_prefix(args), model=args.model)
 
     watch_after = {"case": tree_sha256(case_dir)}
     post_integrity = {
@@ -402,6 +428,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         stripped_env=env_audit["stripped_env"], env_keys=env_audit["env_keys"],
     )
     rec["launch_attempted"] = True
+    rec["inputs_fingerprint"] = current_fp
     rec["post_run_integrity"] = post_integrity
     if not post_integrity["unchanged"]:
         rec["status"] = "failed"
@@ -416,51 +443,106 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_score(args: argparse.Namespace) -> int:
     records_dir = Path(args.records).resolve()
     workspace = Path(args.workspace).resolve()
-    case = load_json(Path(args.case).resolve() / "case.json")
+    case_dir = Path(args.case).resolve()
+    case = load_json(case_dir / "case.json")
+
+    def score_fail(fields: dict) -> int:
+        write_record(records_dir, "evaluation", "failed", **fields)
+        print(json.dumps({"status": "failed", **{k: v for k, v in fields.items() if k in ("verdict", "reason")}},
+                         indent=2))
+        return 1
 
     exe = require_record(records_dir, "execution")
     if exe.state is not RecordState.VALID:
-        fields = {"verdict": "operational_failure", "reason": f"execution record {exe.state.value}: {'; '.join(exe.diagnostics)[:200]}"}
-        write_record(records_dir, "evaluation", "failed", **fields)
-        return _fail(fields["reason"])
+        return score_fail({"verdict": "operational_failure",
+                           "reason": f"execution record {exe.state.value}: {'; '.join(exe.diagnostics)[:200]}"})
 
-    source = workspace / "source"
-    behavior = evaluate_behavior(source, timeout=args.timeout)
-    fields: dict = {"behavior": {"verdict": behavior.verdict, "strategy": behavior.strategy_used, "checks": behavior.checks}}
+    # The scored artifact is the recorded patch replayed on the pinned
+    # base — never whatever tree --workspace happens to contain.
+    exe_rec = exe.record or {}
+    pinned_sha = case["identity_core"]["base_revision"]
+    if exe_rec.get("pinned_source") != pinned_sha:
+        return score_fail({"verdict": "operational_failure",
+                           "reason": "execution record pinned_source != case base revision"})
+    patch_ref = ((exe_rec.get("patch") or {}).get("patch_ref") or {})
+    patch_path = workspace.parent / "artifacts" / (patch_ref.get("file") or "patch.diff")
+    if not patch_ref.get("sha256") or not patch_path.is_file() \
+            or sha256_file(patch_path) != patch_ref["sha256"]:
+        return score_fail({"verdict": "operational_failure",
+                           "reason": f"recorded patch absent or hash-mismatched: {patch_path}"})
 
+    verify = Path(tempfile.mkdtemp(prefix="t2e-score-")) / "tree"
+    shutil.copytree(case_dir / "agent" / "source", verify, symlinks=True)
+    apply = sp.run(["git", "-C", str(verify), "apply", "--whitespace=nowarn", str(patch_path)],
+                   capture_output=True, text=True, timeout=120)
+    if apply.returncode != 0:
+        return score_fail({"verdict": "operational_failure",
+                           "reason": f"recorded patch does not apply to pinned base: {apply.stderr[:300]}"})
+    score_env = dict(os.environ)
+    if _path_prefix(args):
+        score_env["PATH"] = f"{_path_prefix(args)}:{score_env.get('PATH', '')}"
+    install = sp.run(["corepack", "pnpm", "install", "--frozen-lockfile", "--ignore-scripts"],
+                     cwd=verify, capture_output=True, text=True, timeout=900,
+                     env={**score_env, "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"})
+    if install.returncode != 0:
+        return score_fail({"verdict": "operational_failure",
+                           "reason": f"dependency install failed in verification tree: {install.stderr[-300:]}"})
+
+    behavior = evaluate_behavior(verify, timeout=args.timeout, path_prefix=_path_prefix(args))
+    fields: dict = {
+        "verify_tree": {"base": pinned_sha, "patch_sha256": patch_ref["sha256"]},
+        "behavior": {"verdict": behavior.verdict, "strategy": behavior.strategy_used,
+                     "checks": behavior.checks},
+    }
+
+    check_outcomes: list[dict] | None = None
     if args.run_declared_checks:
         log_dir = Path(args.log_dir).resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
         check_outcomes = []
-        score_env = dict(os.environ)
-        if _path_prefix(args):
-            score_env["PATH"] = f"{_path_prefix(args)}:{score_env.get('PATH', '')}"
         for chk in case["task"]["checks"]:
             try:
-                proc = sp.run(["sh", "-c", chk["command"]], cwd=source,
+                proc = sp.run(["sh", "-c", chk["command"]], cwd=verify,
                               capture_output=True, text=True, timeout=int(chk.get("timeout_seconds", 600)),
                               env=score_env)
                 (log_dir / f"{chk['name']}.stdout.txt").write_text(proc.stdout[-20000:])
                 (log_dir / f"{chk['name']}.stderr.txt").write_text(proc.stderr[-20000:])
                 check_outcomes.append({"name": chk["name"], "exit_code": proc.returncode,
+                                       "required": bool(chk.get("required", True)),
                                        "stdout_ref": {"file": f"{chk['name']}.stdout.txt"},
                                        "stderr_ref": {"file": f"{chk['name']}.stderr.txt"}})
             except sp.TimeoutExpired:
-                check_outcomes.append({"name": chk["name"], "exit_code": None, "error": "timeout"})
+                check_outcomes.append({"name": chk["name"], "exit_code": None,
+                                       "required": bool(chk.get("required", True)), "error": "timeout"})
         fields["declared_checks"] = check_outcomes
 
-    verdict = behavior.verdict
-    if verdict == "satisfied":
-        classification = "agent_requirement_satisfied"
-    elif verdict == "unsatisfied":
-        classification = "agent_requirement_failure"
+    # Both surfaces feed the verdict: behavior checks AND the declared
+    # required checks. Declared checks that were not run are distinct from
+    # checks that passed — "satisfied" is unreachable without them.
+    required = [c for c in (check_outcomes or []) if c["required"]]
+    if behavior.verdict == "unsatisfied":
+        verdict = "unsatisfied"
+    elif behavior.verdict == "satisfied":
+        if check_outcomes is None:
+            verdict = "inconclusive:declared-checks-not-run"
+        elif not required:
+            verdict = "inconclusive:no-required-declared-checks"
+        elif any(c["exit_code"] != 0 for c in required):
+            verdict = "unsatisfied:required-check-failed"
+        else:
+            verdict = "satisfied"
     else:
-        classification = "operational_failure"
+        verdict = behavior.verdict
+    classification = (
+        "agent_requirement_satisfied" if verdict == "satisfied"
+        else "agent_requirement_failure" if verdict.startswith("unsatisfied")
+        else "operational_failure"
+    )
     fields["verdict"] = verdict
     fields["classification"] = classification
     # An agent verdict (satisfied/unsatisfied) is a passing evaluation;
     # anything else is an operational failure, not a verdict.
-    record_ok = verdict in ("satisfied", "unsatisfied")
+    record_ok = verdict.startswith("satisfied") or verdict.startswith("unsatisfied")
     write_record(records_dir, "evaluation", "passed" if record_ok else "failed", **fields)
     print(json.dumps({"status": "passed" if record_ok else "failed", "verdict": verdict,
                       "classification": classification}, indent=2))
@@ -521,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--records", required=True)
     ev.add_argument("--stage", help="record stage name (default: evaluation)")
     ev.add_argument("--expect", choices=["satisfied", "unsatisfied"], help="required verdict for record to pass")
+    ev.add_argument("--node-bin")
     ev.add_argument("--timeout", type=int, default=120)
     ev.set_defaults(fn=cmd_evaluate)
 

@@ -8,6 +8,7 @@ as supplementary information only: shared code is not proof of leakage.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -145,6 +146,19 @@ def check_input_package(
                     res.add("git-pinned-head", head == pinned_sha, f"HEAD={head}")
                 status = _git(source, "status", "--porcelain").stdout.strip()
                 res.add("git-clean", status == "", f"dirty: {status.splitlines()[:5]}")
+                # git status ignores .gitignore'd files — compare the whole
+                # on-disk file set with the pinned tree so ignored files
+                # (a covert place to stash solution material) are caught.
+                tracked = set(_git(source, "ls-tree", "-r", "--name-only", "HEAD").stdout.splitlines())
+                on_disk = {
+                    str(p.relative_to(source))
+                    for p in source.rglob("*")
+                    if p.is_file() and p.relative_to(source).parts[0] != ".git"
+                }
+                extra = sorted(on_disk - tracked)
+                missing = sorted(tracked - on_disk)
+                res.add("source-file-set", not extra and not missing,
+                        f"extra={extra[:10]} missing={missing[:10]}")
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
                 res.add("git-history", False, bounded(str(e), 300))
 
@@ -167,3 +181,37 @@ def check_input_package(
             "note": "supplementary only — common code is not proof of leakage",
         }
     return res
+
+
+def package_fingerprint(agent_dir: Path) -> str:
+    """Content-addressed digest of the whole agent input package.
+
+    Covers the top-level inputs byte-for-byte plus the source tree's HEAD,
+    index, working-tree status, and complete on-disk file set (including
+    git-ignored files). Equal fingerprints imply byte-identical inputs, so
+    a launch-time comparison proves nothing changed since check-inputs.
+    """
+    h = hashlib.sha256()
+    for name in sorted(AGENT_TOP_LEVEL - {"source"}):
+        p = agent_dir / name
+        h.update(name.encode())
+        h.update(b"\0")
+        h.update(p.read_bytes() if p.is_file() else b"<absent>")
+        h.update(b"\0")
+    source = agent_dir / "source"
+    if not source.is_dir():
+        h.update(b"no-source")
+        return h.hexdigest()
+    try:
+        h.update(_git(source, "rev-parse", "HEAD").stdout.encode())
+        h.update(_git(source, "ls-files", "-s").stdout.encode())
+        h.update(_git(source, "status", "--porcelain=v1", "--untracked-files=all").stdout.encode())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        h.update(f"git-error:{bounded(str(e), 100)}".encode())
+    for p in sorted(source.rglob("*")):
+        rel = p.relative_to(source)
+        if rel.parts[0] == ".git" or not p.is_file():
+            continue
+        h.update(str(rel).encode())
+        h.update(b"\0")
+    return h.hexdigest()
