@@ -9,6 +9,8 @@ objects. The source repository is only ever read.
 
 from __future__ import annotations
 
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +18,19 @@ from pathlib import Path
 from .canonical import bounded
 
 GIT_TIMEOUT_S = 120
+
+# .git files that record operator-local metadata (fetch source path,
+# reflog identities) rather than pinned-commit data — removed after
+# materialization and forbidden by the package checks.
+GIT_OPERATOR_METADATA = ("FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD")
+
+# Textual .git metadata that must never reference the operator host:
+# absolute filesystem paths and file URLs. Git objects under objects/
+# are content-addressed pinned data (including upstream committer
+# identities) and are legitimately part of the source.
+HOST_REFERENCE_RE = re.compile(
+    r"/Users/|/home/|/private/|/var/|/tmp/|file://|[A-Za-z]:\\"
+)
 
 
 @dataclass
@@ -40,7 +55,50 @@ def _git(dest: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     )
 
 
-def _verify(dest: Path, sha: str, res: MaterializeResult) -> MaterializeResult:
+def scrub_git_metadata(dest: Path) -> list[str]:
+    """Remove operator-local .git metadata (fetch/reflog artifacts)."""
+    git_dir = dest / ".git"
+    removed: list[str] = []
+    for name in GIT_OPERATOR_METADATA:
+        p = git_dir / name
+        if p.exists():
+            p.unlink()
+            removed.append(name)
+    logs = git_dir / "logs"
+    if logs.is_dir():
+        shutil.rmtree(logs)
+        removed.append("logs/")
+    return removed
+
+
+def git_hygiene_problems(dest: Path, source_ref: str | None = None) -> list[str]:
+    """Detect residual operator-host references inside .git metadata."""
+    problems: list[str] = []
+    git_dir = dest / ".git"
+    for name in GIT_OPERATOR_METADATA + ("logs",):
+        if (git_dir / name).exists():
+            problems.append(f".git/{name} present (operator metadata)")
+    for p in sorted(git_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(git_dir)
+        if rel.parts[0] in ("objects", "hooks"):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if HOST_REFERENCE_RE.search(text):
+            problems.append(f".git/{rel} contains a host path or file URL")
+        if source_ref and source_ref in text:
+            problems.append(f".git/{rel} contains the source repository path")
+    return problems
+
+
+def _verify(dest: Path, sha: str, res: MaterializeResult, source_ref: str | None = None) -> MaterializeResult:
+    hygiene = git_hygiene_problems(dest, source_ref)
+    if hygiene:
+        return res.fail(f"git metadata hygiene: {'; '.join(hygiene[:5])}")
     res.head = _git(dest, "rev-parse", "HEAD").stdout.strip()
     if res.head != sha:
         return res.fail(f"HEAD {res.head} != pinned {sha}")
@@ -81,8 +139,12 @@ def materialize(repo: Path, sha: str, dest: Path) -> MaterializeResult:
     dest.mkdir(parents=True)
     try:
         _git(dest, "init", "-q")
+        # No reflogs: they record the operator's git identity and checkout
+        # narration into the agent-visible repository.
+        _git(dest, "config", "core.logAllRefUpdates", "false")
         # Fetch by path/URL: no remote is configured, so none can leak into
-        # the agent-visible repository.
+        # the agent-visible repository. FETCH_HEAD (which records the fetch
+        # source) is scrubbed below.
         fetch = subprocess.run(
             ["git", "-C", str(dest), "fetch", "-q", "--depth=1", str(repo), sha],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
@@ -95,6 +157,7 @@ def materialize(repo: Path, sha: str, dest: Path) -> MaterializeResult:
         )
         if co.returncode != 0:
             return res.fail(f"checkout failed: {bounded(co.stderr, 300)}")
-        return _verify(dest, sha, res)
+        scrub_git_metadata(dest)
+        return _verify(dest, sha, res, source_ref=str(repo))
     except subprocess.TimeoutExpired:
         return res.fail("git operation timed out")

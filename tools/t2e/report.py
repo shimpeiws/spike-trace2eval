@@ -18,10 +18,23 @@ from .records import RecordState, require_record
 FORBIDDEN_REPORT_PATTERNS = [
     r"patch\.diff\b.{0,40}@@",          # patch hunks
     r"OPENCODE_SERVER_PASSWORD",
-    r"/Users/\S+/coding-worker",         # private evidence path shape
     r"events\.jsonl:",
     r"You are an autonomous coding worker",  # full prompt text
+    # No absolute filesystem paths of any shape (records are referenced
+    # relatively; private evidence paths must never appear).
+    r"(?<![\w:/])(?:/Users/|/home/|/private/|/var/|/tmp/|/opt/|/etc/|/srv/|/root/)[\w./~-]*",
+    r"[A-Za-z]:\\[\w\\.~-]+",            # Windows drive paths
 ]
+
+# Mechanical masking applied to record diagnostics before they can be
+# embedded in the report: any absolute-path-looking token becomes <path>.
+ABS_PATH_RE = re.compile(
+    r"(?<![\w:/])(?:/[A-Za-z0-9._~-]+){2,}/?|[A-Za-z]:\\[\w\\.~-]+"
+)
+
+
+def mask_paths(text: str) -> str:
+    return ABS_PATH_RE.sub("<path>", text)
 
 QUESTIONS = [
     "Can the saved job and pinned Git SHA recover the original requirements and starting source tree?",
@@ -31,11 +44,18 @@ QUESTIONS = [
 
 
 def sanitize_scan(text: str, extra_forbidden: list[str] | None = None) -> list[str]:
-    """Return a list of violations — empty means the text is sanitized."""
+    """Return a list of violations — empty means the text is sanitized.
+
+    `extra_forbidden` entries are literal strings (e.g. the private
+    evidence path), never regexes.
+    """
     problems = []
-    for pat in FORBIDDEN_REPORT_PATTERNS + (extra_forbidden or []):
+    for pat in FORBIDDEN_REPORT_PATTERNS:
         if re.search(pat, text):
             problems.append(f"forbidden pattern present: {pat!r}")
+    for literal in extra_forbidden or []:
+        if literal and literal in text:
+            problems.append(f"forbidden literal present: {literal[:40]!r}…")
     return problems
 
 
@@ -44,7 +64,8 @@ def _stage_summary(records_dir: Path, stage: str) -> tuple[str, dict[str, Any] |
     if rec.state is RecordState.ABSENT:
         return f"**{stage}**: record absent", None
     if rec.state is RecordState.INVALID:
-        return f"**{stage}**: record invalid ({'; '.join(rec.diagnostics)[:200]})", rec.record
+        detail = mask_paths("; ".join(rec.diagnostics))[:200]
+        return f"**{stage}**: record invalid ({detail})", rec.record
     return f"**{stage}**: passed", rec.record
 
 

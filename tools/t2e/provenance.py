@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .canonical import bounded, sha256_file
-from .materialize import _git
+from .materialize import _git, git_hygiene_problems
 
 # Files at the top of the agent package. Everything else must live under
 # source/ (whose contents are pinned by the commit) or source/.git.
@@ -133,6 +133,8 @@ def check_input_package(
         if not git_dir.exists():
             res.add("git-history", False, "source has no .git (expected a depth-1 materialized repo)")
         else:
+            hygiene = git_hygiene_problems(source)
+            res.add("git-hygiene", not hygiene, "; ".join(hygiene[:5]))
             try:
                 count = int(_git(source, "rev-list", "--count", "HEAD").stdout.strip())
                 remotes = [r for r in _git(source, "remote").stdout.split() if r]

@@ -19,6 +19,12 @@ from .canonical import bounded, load_json, write_json_atomic
 SCHEMA_VERSION = 1
 RECORD_STATUSES = ("passed", "failed")
 
+# Required fields for a *passing* record of each stage — a record missing
+# them is present-but-incomplete, i.e. invalid, not an agent verdict.
+REQUIRED_FIELDS: dict[str, list[str]] = {
+    "execution": ["launch", "launch_attempted", "pinned_source", "task_sha256", "budgets"],
+}
+
 
 class RecordState(Enum):
     ABSENT = "absent"
@@ -81,6 +87,10 @@ def load_record(path: Path, stage: str) -> LoadedRecord:
         problems.append(f"status is 'failed': {bounded(str(detail), 300)}")
     if problems:
         return LoadedRecord(RecordState.INVALID, record=raw, diagnostics=problems)
+    missing = [k for k in REQUIRED_FIELDS.get(stage, []) if k not in raw]
+    if missing:
+        return LoadedRecord(RecordState.INVALID, record=raw,
+                            diagnostics=[f"record {path.name} missing required fields: {missing}"])
     return LoadedRecord(RecordState.VALID, record=raw)
 
 

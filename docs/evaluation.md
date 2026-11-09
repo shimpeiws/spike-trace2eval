@@ -15,6 +15,11 @@ any execution:
 - **Mount boundary** — no symlink escapes the package.
 - **Git boundary** — `source/` is a depth-1 repository: exactly one
   commit, `HEAD` equal to the pinned SHA, no remotes, clean worktree.
+- **Git hygiene** — `.git` carries no operator metadata: no `FETCH_HEAD`
+  (which records the fetch source path), no reflogs (which record the
+  operator's git identity), and no host paths or `file://` URLs in
+  textual metadata. Content-addressed objects are exempt — the pinned
+  commit's own authorship is legitimately part of the source.
 - **Forbidden filenames** — evidence artifact names never appear outside
   `source/`.
 
@@ -30,11 +35,24 @@ of leakage.
   the evidence directory is never mounted or referenced.
 - Dependencies are acquired by `setup.sh` **before** agent start. After
   that point, external search and solution retrieval are restricted at
-  the harness tool level (web search/fetch tools are disabled) while the
-  configured inference service remains usable. OS-level egress filtering
-  is not enforced — a recorded approximation.
-- The original run's server credential (`OPENCODE_SERVER_PASSWORD`) is
-  stripped from the agent environment; the stripping is recorded.
+  the harness tool level (web search/fetch tools and external-directory
+  file access are denied) while the configured inference service remains
+  usable. OS-level egress filtering is not enforced — a recorded
+  approximation.
+- The agent subprocess environment is **default-deny**: only a recorded
+  allowlist of functional variables (PATH, HOME, TMPDIR, locale, proxy,
+  toolchain) passes; any name resembling a credential is stripped
+  unconditionally. Both lists are recorded in the execution record.
+- The harness's `external_directory` deny does not cover `bash`: the
+  agent can write outside its workspace. This is a recorded deviation;
+  the pipeline compensates by hashing the case package before and after
+  launch (`post_run_integrity`) — a changed input tree marks the
+  execution record failed. Workspace-external writes beyond that watch
+  set are not detectable and are a stated limitation.
+- Refused launches (`preflight_refused`, `setup_failure`,
+  `boundary_refused`) are recorded in `execution_refused.json` and do
+  **not** consume the single experiment run; only a real launch attempt
+  writes `execution.json`, guarded by a crash-safe marker.
 
 ## Behavioral checks (evaluator-side)
 
