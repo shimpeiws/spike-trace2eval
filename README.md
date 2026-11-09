@@ -2,7 +2,7 @@
 
 A single-case proof of concept for turning an existing coding-worker execution trace into an evaluation case for an independent coding agent, inspired by [Trace2Eval](https://arxiv.org/abs/2611.06506).
 
-**Planning only. The extractor, execution environment, and evaluator are not implemented. No independent agent replay has been validated.**
+**R1 pipeline implemented and validated end to end.** The extractor, materializer, environment recreation, leakage controls, evaluator, and single-run harness under `tools/t2e/` are implemented; the one permitted independent run completed and scored `satisfied`. See the [R1 report](docs/r1-report.md).
 
 ## First case
 
@@ -27,4 +27,15 @@ Generate initial inputs deterministically from the job and starting commit. Do n
 
 The [R1 PoC plan](docs/poc-plan.md) records the evidence, reconstruction limits, differences from the paper, leakage controls, implementation steps, and acceptance criteria.
 
-The current deliverable consists of this README and the plan. Multiple cases, a general-purpose framework, new coding-worker instrumentation, and performance rankings are out of scope.
+## Implementation
+
+The pipeline lives in `tools/t2e/` (Python stdlib only, `PYTHONPATH=tools python3 -m t2e.cli <stage>`): `extract`, `materialize`, `environment`, `check-inputs`, `controls`, `run`, `score`, `report`. Each stage writes a small JSON record; a later stage refuses to proceed when a required record is missing or invalid. Details:
+
+- [Evidence requirements](docs/evidence-input.md) — what the private trace must contain; the private material itself is never committed.
+- [Environment recreation](docs/environment.md) — version pinning, recorded deviations, isolated setup.
+- [Evaluation](docs/evaluation.md) — behavior checks, controls, provenance boundaries, failure classes.
+- [R1 report](docs/r1-report.md) — sanitized outcomes and remaining limitations, generated from stage records.
+
+Synthetic fixtures under `tests/` cover success and failure paths (`./run_tests.sh`). The real R1 stage records are produced locally under `out/records/` (gitignored).
+
+Multiple cases, a general-purpose framework, new coding-worker instrumentation, and performance rankings are out of scope.
